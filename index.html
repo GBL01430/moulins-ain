@@ -175,6 +175,8 @@ const CONFIG = {
   // Peut aussi être passé dans l'adresse : carte-moulins-ain.html?grist=XXXXXXXX
   gristServer: "https://docs.getgrist.com",
   gristDocId: "",
+  // Page Grist où la carte est installée : c'est là que la saisie s'enregistre
+  gristPageUrl: "https://docs.getgrist.com/jkXum4YQg1yb/Moulins-de-lAin/p/1",
   gristTable: "Moulins",
   ain: { center:[46.07,5.35], zoom:9, bbox:[4.72,45.60,6.18,46.53] }, // lon/lat min-max
   wfs: "https://data.geopf.fr/wfs/ows",
@@ -502,7 +504,10 @@ function setPlacing(on){
   if (on) { status("Cliquez sur la rivière à l'emplacement du moulin (zoomez pour plus de précision)."); if (map.getZoom()<13) map.setZoom(13); }
   else { if (draft) { map.removeLayer(draft); draft=null; } }
 }
-$("#placeBtn").onclick = () => setPlacing(!placing);
+$("#placeBtn").onclick = () => {
+  if (MODE === "demo") { window.open(CONFIG.gristPageUrl, "_blank", "noopener"); return; }
+  setPlacing(!placing);
+};
 map.on("click", e => { if (placing) startDraft(e.latlng); });
 
 function nearestRiver(latlng){
@@ -645,6 +650,11 @@ if (inGrist){
       setData(EXEMPLES.map(m=>({...m,_exemple:true})), "données d'exemple (Grist inaccessible)"); });
 } else {
   setData(EXEMPLES.map(m=>({...m,_exemple:true})), "données d'exemple");
+  /* Carte ouverte seule : on renvoie vers la page Grist, seule à pouvoir enregistrer */
+  $("#placeBtn").textContent = "Saisir dans Grist ↗";
+  const note = document.createElement("div"); note.className = "status err";
+  note.innerHTML = `Cette carte est ouverte hors de Grist : elle montre des exemples et n'enregistre rien. <a href="${CONFIG.gristPageUrl}" target="_blank" rel="noopener">Ouvrir la carte dans Grist</a> pour voir et saisir les vrais moulins.`;
+  $("#status").before(note);
 }
 loadRivers(); loadBV();
 </script>
