@@ -25,6 +25,7 @@
 :root[data-theme="dark"]{
   --bg:#0f1719; --panel:#162124; --ink:#e3ecec; --muted:#93a5a8; --line:#2a3a3e;
   --water:#6fb3e6; --water-soft:#1b3242; --basin:#7cc3b0; --warn:#e08a6c; color-scheme:dark}
+[hidden]{display:none!important}
 html,body{height:100%;margin:0}
 body{background:var(--bg);color:var(--ink);font:14px/1.45 var(--f-body);display:flex;overflow:hidden}
 h1,h2,h3{font-family:var(--f-display);font-weight:700;margin:0;text-wrap:balance}
@@ -227,6 +228,7 @@ const EXEMPLES = [
 const $ = s => document.querySelector(s);
 const status = (msg, err) => { const el=$("#status"); el.textContent=msg; el.classList.toggle("err",!!err); };
 const map = L.map("map",{zoomControl:true, preferCanvas:false}).setView(CONFIG.ain.center, CONFIG.ain.zoom);
+new ResizeObserver(() => map.invalidateSize()).observe(document.getElementById("map"));
 map.createPane("bv").style.zIndex=350;
 map.createPane("rivers").style.zIndex=420;
 map.createPane("wheels").style.zIndex=650;
