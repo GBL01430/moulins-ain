@@ -1,0 +1,631 @@
+<!doctype html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Moulins de l'Ain</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Spectral:wght@500;700&family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap">
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/Turf.js/6.5.0/turf.min.js"></script>
+<script src="https://docs.getgrist.com/grist-plugin-api.js"></script>
+<style>
+/* Carte plein écran ; panneau latéral (couches, légende, récap) ; fiche du moulin en tiroir à droite */
+:root{
+  --bg:#eef2f1; --panel:#fbfcfc; --ink:#17262b; --muted:#5b6b70; --line:#d3dcdc;
+  --water:#1f6fa8; --water-soft:#d8e8f4; --basin:#2f6b5e; --warn:#a4462a;
+  --f-display:"Spectral", Georgia, "Times New Roman", serif;
+  --f-body:"IBM Plex Sans", "Segoe UI", system-ui, sans-serif;
+  --f-mono:"IBM Plex Mono", Consolas, monospace;
+}
+@media (prefers-color-scheme: dark){:root:not([data-theme="light"]){
+  --bg:#0f1719; --panel:#162124; --ink:#e3ecec; --muted:#93a5a8; --line:#2a3a3e;
+  --water:#6fb3e6; --water-soft:#1b3242; --basin:#7cc3b0; --warn:#e08a6c; color-scheme:dark}}
+:root[data-theme="dark"]{
+  --bg:#0f1719; --panel:#162124; --ink:#e3ecec; --muted:#93a5a8; --line:#2a3a3e;
+  --water:#6fb3e6; --water-soft:#1b3242; --basin:#7cc3b0; --warn:#e08a6c; color-scheme:dark}
+html,body{height:100%;margin:0}
+body{background:var(--bg);color:var(--ink);font:14px/1.45 var(--f-body);display:flex;overflow:hidden}
+h1,h2,h3{font-family:var(--f-display);font-weight:700;margin:0;text-wrap:balance}
+button{font:inherit;color:inherit}
+#side{width:340px;max-width:88vw;flex:none;background:var(--panel);border-right:1px solid var(--line);display:flex;flex-direction:column;min-height:0;z-index:1000}
+#side header{padding:16px 18px 10px;border-bottom:1px solid var(--line)}
+#side header h1{font-size:24px;letter-spacing:.01em}
+#side header p{margin:4px 0 0;color:var(--muted);font-size:12.5px}
+.tabs{display:flex;border-bottom:1px solid var(--line)}
+.tabs button{flex:1;background:none;border:0;padding:10px 4px;cursor:pointer;color:var(--muted);font-weight:500;border-bottom:2px solid transparent}
+.tabs button[aria-selected="true"]{color:var(--ink);border-bottom-color:var(--water)}
+.pane{overflow:auto;padding:14px 18px 24px;flex:1;min-height:0;display:flex;flex-direction:column;gap:18px}
+.label{font-size:11px;text-transform:uppercase;letter-spacing:.09em;color:var(--muted);font-weight:600;margin-bottom:6px}
+.bases{display:grid;grid-template-columns:1fr 1fr;gap:6px}
+.bases button{border:1px solid var(--line);background:var(--bg);border-radius:6px;padding:7px 8px;cursor:pointer;text-align:left;font-size:13px}
+.bases button[aria-pressed="true"]{border-color:var(--water);background:var(--water-soft);font-weight:600}
+.row{display:flex;align-items:center;gap:8px;padding:3px 0;cursor:pointer}
+.row input{accent-color:var(--water)}
+.legend{display:flex;flex-direction:column;gap:2px}
+.legend .row span.n{margin-left:auto;font-family:var(--f-mono);font-size:12px;color:var(--muted);font-variant-numeric:tabular-nums}
+.rivers-key{display:flex;align-items:flex-end;gap:10px;font-size:11.5px;color:var(--muted)}
+.rivers-key i{display:block;width:34px;background:var(--water);border-radius:3px}
+.status{font-size:12px;color:var(--muted);border-left:3px solid var(--line);padding:4px 8px}
+.status.err{border-color:var(--warn);color:var(--warn)}
+.src{font-size:12px;color:var(--muted)}
+.src code{font-family:var(--f-mono);font-size:11.5px}
+#map{flex:1;min-width:0;height:100%}
+.leaflet-container{font:inherit;background:var(--bg)}
+.wheel{filter:drop-shadow(0 1px 1.5px rgba(0,0,0,.45));transition:transform .12s}
+.wheel:hover{transform:scale(1.25)}
+.bv-label{background:none;border:0;box-shadow:none;color:var(--basin);font:600 11px var(--f-body);text-shadow:0 0 3px var(--panel),0 0 3px var(--panel)}
+/* récap */
+.recap h3{font-size:17px;margin-top:6px}
+.recap details{border-top:1px solid var(--line);padding:6px 0}
+.recap summary{cursor:pointer;display:flex;gap:8px;align-items:baseline;font-weight:600}
+.recap summary .n{margin-left:auto;font-family:var(--f-mono);font-size:12px;color:var(--muted)}
+.tbl-wrap{overflow-x:auto;margin-top:6px}
+table{border-collapse:collapse;font-size:12px;min-width:100%}
+th,td{padding:4px 6px;border-bottom:1px solid var(--line);text-align:left;white-space:nowrap}
+th{font-weight:600;color:var(--muted);font-size:11px;text-transform:uppercase;letter-spacing:.05em}
+td.num{text-align:right;font-family:var(--f-mono);font-variant-numeric:tabular-nums}
+tr.click{cursor:pointer} tr.click:hover td{background:var(--water-soft)}
+.btn{border:1px solid var(--line);background:var(--bg);border-radius:6px;padding:7px 10px;cursor:pointer;font-size:13px}
+.btn:hover{border-color:var(--water)}
+/* fiche */
+#fiche{position:absolute;top:0;right:0;height:100%;width:400px;max-width:100%;background:var(--panel);border-left:1px solid var(--line);z-index:1100;display:flex;flex-direction:column;box-shadow:-6px 0 18px rgba(0,0,0,.12)}
+#fiche .head{padding:16px 18px 12px;border-bottom:1px solid var(--line);display:flex;gap:12px;align-items:flex-start}
+#fiche .head h2{font-size:22px;line-height:1.15}
+#fiche .head .sub{color:var(--muted);font-size:12.5px;margin-top:3px}
+#fiche .close{margin-left:auto;background:none;border:1px solid var(--line);border-radius:6px;width:30px;height:30px;cursor:pointer;flex:none}
+#fiche .body{overflow:auto;padding:14px 18px 28px;display:flex;flex-direction:column;gap:18px}
+.gallery{display:grid;grid-template-columns:repeat(auto-fill,minmax(110px,1fr));gap:6px}
+.gallery a{display:block;aspect-ratio:4/3;background:var(--bg);border:1px solid var(--line);border-radius:4px;overflow:hidden;max-width:100%}
+.gallery img{width:100%;height:100%;object-fit:cover}
+.empty{border:1px dashed var(--line);border-radius:6px;padding:12px;color:var(--muted);font-size:12.5px}
+dl.id{display:grid;grid-template-columns:max-content 1fr;gap:5px 14px;margin:0}
+dl.id dt{color:var(--muted);font-size:12.5px}
+dl.id dd{margin:0;min-width:0;overflow-wrap:anywhere}
+dl.id dd.num{font-family:var(--f-mono)}
+.pill{display:inline-flex;align-items:center;gap:6px;font-size:12px;border:1px solid var(--line);border-radius:999px;padding:2px 9px 2px 4px}
+.example{font-size:11px;color:var(--warn);font-weight:600;letter-spacing:.05em;text-transform:uppercase}
+#toggleSide{display:none}
+/* mode placement */
+#placeBtn{position:absolute;z-index:1050;top:calc(10px + env(safe-area-inset-top,0px));right:calc(10px + env(safe-area-inset-right,0px));
+  background:var(--water);color:#fff;border:0;border-radius:8px;padding:9px 14px;font-weight:600;cursor:pointer;box-shadow:0 2px 8px rgba(0,0,0,.25)}
+#placeBtn[aria-pressed="true"]{background:var(--warn)}
+body.placing #map{cursor:crosshair}
+body.placing #map .leaflet-interactive{cursor:crosshair}
+form.add{display:flex;flex-direction:column;gap:10px}
+form.add label{display:flex;flex-direction:column;gap:3px;font-size:12.5px;color:var(--muted)}
+form.add input,form.add select,form.add textarea{font:inherit;color:var(--ink);background:var(--bg);border:1px solid var(--line);border-radius:6px;padding:7px 9px}
+form.add .two{display:grid;grid-template-columns:1fr 1fr;gap:8px}
+form.add .two > label{min-width:0}
+form.add .hint{font-size:12px;color:var(--muted)}
+form.add .actions{display:flex;gap:8px;flex-wrap:wrap}
+.btn.primary{background:var(--water);color:#fff;border-color:var(--water);font-weight:600}
+.note{font-size:12.5px;border-left:3px solid var(--warn);padding:6px 10px;color:var(--ink);background:var(--bg)}
+.ok{border-left-color:var(--basin)}
+@media (max-width:720px){
+  #side{position:absolute;inset:0 auto 0 0;transform:translateX(-100%);transition:transform .2s}
+  body.side-open #side{transform:none}
+  #toggleSide{display:block;position:absolute;z-index:1050;top:calc(10px + env(safe-area-inset-top,0px));left:calc(56px + env(safe-area-inset-left,0px))}
+}
+:focus-visible{outline:2px solid var(--water);outline-offset:2px}
+@media (prefers-reduced-motion:reduce){*{transition:none!important}}
+</style>
+</head>
+<body>
+<aside id="side">
+  <header>
+    <h1>Moulins de l'Ain</h1>
+    <p id="srcline">Inventaire des usines hydrauliques par bassin versant</p>
+  </header>
+  <div class="tabs" role="tablist">
+    <button role="tab" aria-selected="true" data-tab="carte" id="tab-carte">Carte</button>
+    <button role="tab" aria-selected="false" data-tab="recap" id="tab-recap">Récap par affluent</button>
+  </div>
+
+  <div class="pane" id="pane-carte">
+    <section>
+      <div class="label">Fond de carte</div>
+      <div class="bases" id="bases"></div>
+    </section>
+    <section>
+      <div class="label">Superpositions</div>
+      <label class="row"><input type="checkbox" id="ov-cadastre"> Cadastre (parcelles)</label>
+      <label class="row"><input type="checkbox" id="ov-rivers" checked> Cours d'eau</label>
+      <label class="row"><input type="checkbox" id="ov-bv" checked> Bassins versants</label>
+      <div class="rivers-key" aria-hidden="true" style="margin-top:6px">
+        <div><i style="height:6px"></i>fleuve</div><div><i style="height:4px"></i>rivière</div><div><i style="height:2.5px"></i>affluent</div><div><i style="height:1.2px"></i>ruisseau</div>
+      </div>
+    </section>
+    <section>
+      <div class="label">Usines hydrauliques</div>
+      <div class="legend" id="legend"></div>
+    </section>
+    <div class="status" id="status">Chargement…</div>
+    <section id="keyBox" hidden>
+      <div class="label">Enregistrement hors de Grist</div>
+      <label style="display:flex;flex-direction:column;gap:4px;font-size:12.5px;color:var(--muted)">Clé API Grist personnelle (reste dans ce navigateur)
+        <input type="password" id="apiKey" autocomplete="off" style="font:inherit;padding:6px 8px;border:1px solid var(--line);border-radius:6px;background:var(--bg);color:var(--ink)"></label>
+    </section>
+    <section class="src">
+      <div class="label">Sources</div>
+      Fonds et hydrographie : IGN Géoplateforme (BD TOPO®, BD ORTHO®, PCI, carte d'état-major 1820-1866, SCAN 50 historique 1950).<br>
+      Moulins : <span id="datasrc">données d'exemple</span>.
+    </section>
+  </div>
+
+  <div class="pane recap" id="pane-recap" hidden>
+    <div id="recap"></div>
+  </div>
+</aside>
+
+<button class="btn" id="toggleSide" aria-label="Afficher le panneau">☰ Légende</button>
+<div id="map"></div>
+<button id="placeBtn" aria-pressed="false">＋ Placer un moulin</button>
+
+<aside id="fiche" hidden aria-live="polite"></aside>
+
+<script>
+/* ============================================================
+   CONFIGURATION — tout ce qu'on règle se trouve ici
+   ============================================================ */
+const CONFIG = {
+  // Grist : identifiant du document (dans l'URL du document Grist, après /doc/ ou le sous-domaine)
+  // Peut aussi être passé dans l'adresse : carte-moulins-ain.html?grist=XXXXXXXX
+  gristServer: "https://docs.getgrist.com",
+  gristDocId: "",
+  gristTable: "Moulins",
+  ain: { center:[46.07,5.35], zoom:9, bbox:[4.72,45.60,6.18,46.53] }, // lon/lat min-max
+  wfs: "https://data.geopf.fr/wfs/ows",
+  wms: "https://data.geopf.fr/wms-r/wms",
+  wmts: "https://data.geopf.fr/wmts",
+};
+
+/* Types d'usine : clé = valeur saisie dans la colonne « Type » de Grist */
+const TYPES = [
+  {k:"Farine",        label:"Moulin à farine",       fill:"#f2c230", stroke:"#5a4400"},
+  {k:"Huile",         label:"Moulin à huile",        fill:"#ee8a24", stroke:"#5b2c00"},
+  {k:"Tournerie",     label:"Tournerie",             fill:"#8a5a32", stroke:"#2b1606"},
+  {k:"Scierie",       label:"Scierie",               fill:"#3f9b4a", stroke:"#0f3314"},
+  {k:"Hydroélectrique",label:"Usine hydroélectrique",fill:"#1b1b1b", stroke:"#d9d9d9"},
+  {k:"Papeterie",     label:"Papeterie",             fill:"#ffffff", stroke:"#333333"},
+  {k:"Métaux",        label:"Travail des métaux",    fill:"#d23a2c", stroke:"#4a0b05"},
+  {k:"Pierre",        label:"Travail de la pierre",  fill:"#8b4fc6", stroke:"#2a0f45"},
+  {k:"Textile",       label:"Textile",               fill:"#2f74d0", stroke:"#0b2552"},
+  {k:"Autre",         label:"Autres usines",         fill:"#9aa3a6", stroke:"#2f3536"},
+];
+const typeOf = k => TYPES.find(t => norm(t.k) === norm(k)) || TYPES[TYPES.length-1];
+function norm(s){return String(s||"").normalize("NFD").replace(/[̀-ͯ]/g,"").toLowerCase().trim()}
+
+/* Colonnes de la fiche d'identité, dans l'ordre d'affichage (= colonnes Grist) */
+const FIELDS = [
+  ["Commune","Commune"],["Cours_d_eau","Cours d'eau"],["Affluent","Affluent de"],["Riviere_principale","Rivière principale"],
+  ["Type","Type d'usine"],["Etat","État actuel"],["Premiere_mention","Première mention"],
+  ["Hauteur_chute_m","Hauteur de chute (m)",1],["Debit_m3s","Débit (m³/s)",1],["Puissance_brute_kW","Puissance brute (kW)",1],
+  ["Droit_d_eau","Droit d'eau"],["Nb_roues","Nombre de roues",1],["Type_roue","Roue / turbine"],
+  ["Proprietaire","Propriétaire"],["Protection","Protection"],["Code_ROE","Code ROE"],
+  ["Sources","Sources"],["Notes","Notes"],["Contributeur","Saisi par"],["Mis_a_jour","Mis à jour"],
+];
+
+/* Données d'exemple — à remplacer par le document Grist */
+const EXEMPLES = [
+  {id:1,Nom:"Moulin d'exemple A",Commune:"Saint-Rambert-en-Bugey",Cours_d_eau:"Albarine",Affluent:"Albarine",Riviere_principale:"Ain",Type:"Farine",Latitude:45.9480,Longitude:5.4330,Etat:"Vestiges",Hauteur_chute_m:3.2,Debit_m3s:1.5,Droit_d_eau:"Fondé en titre",Nb_roues:2,Type_roue:"Roue de poitrine"},
+  {id:2,Nom:"Scierie d'exemple B",Commune:"Tenay",Cours_d_eau:"Albarine",Affluent:"Albarine",Riviere_principale:"Ain",Type:"Scierie",Latitude:45.9180,Longitude:5.5050,Etat:"Transformé",Hauteur_chute_m:4.0,Debit_m3s:1.2},
+  {id:3,Nom:"Tournerie d'exemple C",Commune:"Oyonnax",Cours_d_eau:"Ange",Affluent:"Oignin",Riviere_principale:"Ain",Type:"Tournerie",Latitude:46.2570,Longitude:5.6550,Etat:"Disparu",Hauteur_chute_m:2.5,Debit_m3s:0.4},
+  {id:4,Nom:"Papeterie d'exemple D",Commune:"Valserhône",Cours_d_eau:"Valserine",Affluent:"Valserine",Riviere_principale:"Rhône",Type:"Papeterie",Latitude:46.1100,Longitude:5.8260,Etat:"Vestiges",Hauteur_chute_m:6.0,Debit_m3s:2.0},
+  {id:5,Nom:"Usine d'exemple E",Commune:"Meillonnas",Cours_d_eau:"Suran",Affluent:"Suran",Riviere_principale:"Ain",Type:"Hydroélectrique",Latitude:46.3000,Longitude:5.3800,Etat:"En activité",Hauteur_chute_m:5.5,Debit_m3s:3.0,Type_roue:"Turbine Francis"},
+  {id:6,Nom:"Huilerie d'exemple F",Commune:"Bourg-en-Bresse",Cours_d_eau:"Reyssouze",Affluent:"Reyssouze",Riviere_principale:"Saône",Type:"Huile",Latitude:46.2100,Longitude:5.2200,Etat:"Disparu"},
+  {id:7,Nom:"Martinet d'exemple G",Commune:"Belley",Cours_d_eau:"Furans",Affluent:"Furans",Riviere_principale:"Rhône",Type:"Métaux",Latitude:45.7600,Longitude:5.6800,Etat:"Vestiges",Hauteur_chute_m:3.8,Debit_m3s:0.8},
+  {id:8,Nom:"Foulon d'exemple H",Commune:"Pont-de-Veyle",Cours_d_eau:"Veyle",Affluent:"Veyle",Riviere_principale:"Saône",Type:"Textile",Latitude:46.2600,Longitude:4.8900,Etat:"Transformé",Hauteur_chute_m:1.8,Debit_m3s:2.5},
+  {id:9,Nom:"Taillerie d'exemple I",Commune:"Artemare",Cours_d_eau:"Séran",Affluent:"Séran",Riviere_principale:"Rhône",Type:"Pierre",Latitude:45.8700,Longitude:5.6900,Etat:"Vestiges"},
+  {id:10,Nom:"Usine d'exemple J",Commune:"Châtillon-sur-Chalaronne",Cours_d_eau:"Chalaronne",Affluent:"Chalaronne",Riviere_principale:"Saône",Type:"Autre",Latitude:46.1180,Longitude:4.9570,Etat:"Inconnu"},
+];
+
+/* ============================================================
+   CARTE
+   ============================================================ */
+const $ = s => document.querySelector(s);
+const status = (msg, err) => { const el=$("#status"); el.textContent=msg; el.classList.toggle("err",!!err); };
+const map = L.map("map",{zoomControl:true, preferCanvas:false}).setView(CONFIG.ain.center, CONFIG.ain.zoom);
+map.createPane("bv").style.zIndex=350;
+map.createPane("rivers").style.zIndex=420;
+map.createPane("wheels").style.zIndex=650;
+
+const attrIGN = '© <a href="https://www.ign.fr/" target="_blank" rel="noopener">IGN</a> Géoplateforme';
+const wmts = (layer, fmt, maxNative) => L.tileLayer(
+  `${CONFIG.wmts}?SERVICE=WMTS&REQUEST=GetTile&VERSION=1.0.0&LAYER=${layer}&STYLE=normal&TILEMATRIXSET=PM&TILEMATRIX={z}&TILEROW={y}&TILECOL={x}&FORMAT=${fmt}`,
+  {maxZoom:19, maxNativeZoom:maxNative, attribution:attrIGN});
+const wms = (layers, fmt, opts={}) => L.tileLayer.wms(CONFIG.wms, Object.assign(
+  {layers, format:fmt, transparent:fmt==="image/png", version:"1.3.0", maxZoom:19, attribution:attrIGN}, opts));
+
+const BASES = {
+  plan:   {label:"Plan IGN",           layer: wmts("GEOGRAPHICALGRIDSYSTEMS.PLANIGNV2","image/png",19)},
+  ortho:  {label:"Vue aérienne",       layer: wmts("ORTHOIMAGERY.ORTHOPHOTOS","image/jpeg",19)},
+  em:     {label:"État-major 1820-66", layer: wms("GEOGRAPHICALGRIDSYSTEMS.ETATMAJOR40","image/jpeg",{maxNativeZoom:16})},
+  ign50:  {label:"Carte IGN 1950",     layer: wms("GEOGRAPHICALGRIDSYSTEMS.MAPS.SCAN50.1950","image/jpeg",{maxNativeZoom:16})},
+};
+const cadastre = wms("CADASTRALPARCELS.PARCELLAIRE_EXPRESS","image/png",{minZoom:13, opacity:.85});
+let currentBase = "plan";
+BASES[currentBase].layer.addTo(map);
+for (const [k,b] of Object.entries(BASES)) {
+  const btn = document.createElement("button");
+  btn.id = "base-"+k; btn.textContent = b.label; btn.setAttribute("aria-pressed", k===currentBase);
+  btn.onclick = () => { map.removeLayer(BASES[currentBase].layer); currentBase=k; b.layer.addTo(map).bringToBack();
+    document.querySelectorAll("#bases button").forEach(x=>x.setAttribute("aria-pressed", x===btn)); };
+  b.layer.on("tileerror", () => status(`Le fond « ${b.label} » ne répond pas pour cette zone ou ce zoom.`, true));
+  $("#bases").appendChild(btn);
+}
+$("#ov-cadastre").onchange = e => e.target.checked ? cadastre.addTo(map) : map.removeLayer(cadastre);
+cadastre.on("add", () => { if (map.getZoom() < 13) status("Le cadastre s'affiche à partir du zoom 13 : rapprochez-vous."); });
+
+/* --- utilitaires WFS --- */
+function wfsUrl(typename, cql, count=5000){
+  const p = new URLSearchParams({SERVICE:"WFS",VERSION:"2.0.0",REQUEST:"GetFeature",TYPENAMES:typename,
+    OUTPUTFORMAT:"application/json",SRSNAME:"EPSG:4326",COUNT:String(count)});
+  if (cql) p.set("CQL_FILTER", cql);
+  return `${CONFIG.wfs}?${p}`;
+}
+async function getJSON(url){ const r = await fetch(url); if(!r.ok) throw new Error(r.status); return r.json(); }
+/* Remet les coordonnées en lon/lat si le serveur les renvoie en lat/lon */
+function fixAxes(gj){
+  let sample; turf.coordEach(gj, c => { if(!sample) sample=c; });
+  if (sample && sample[0] > 40 && sample[1] < 20) turf.coordEach(gj, c => { const t=c[0]; c[0]=c[1]; c[1]=t; });
+  return gj;
+}
+const bboxCQL = b => `BBOX(geometrie,${b[0]},${b[1]},${b[2]},${b[3]},'EPSG:4326')`;
+
+/* --- limite du département --- */
+getJSON(wfsUrl("ADMINEXPRESS-COG-CARTO.LATEST:departement","code_insee='01'",1))
+  .then(gj => L.geoJSON(fixAxes(gj),{interactive:false,style:{color:"#7a2f1d",weight:2,dashArray:"6 4",fill:false}}).addTo(map))
+  .catch(()=>{});
+
+/* --- cours d'eau hiérarchisés (BD TOPO « importance » 1 = fleuve … 6 = ruisseau) --- */
+const WIDTH = {"1":6,"2":4.5,"3":3.2,"4":2.2,"5":1.5,"6":1};
+const riverLayer = L.layerGroup().addTo(map);
+const riverCache = new Map();
+let lastRivers = null;
+function maxImportance(z){ return z<=9?3 : z<=10?4 : z<=12?5 : 6; }
+function riverStyle(f){ const i=String(f.properties.importance||"6"); return {pane:"rivers",color:getComputedStyle(document.documentElement).getPropertyValue("--water").trim()||"#1f6fa8",
+  weight:(WIDTH[i]||1)*(map.getZoom()>=13?1.4:1), opacity:.95, lineCap:"round"}; }
+let riverTimer;
+async function loadRivers(){
+  if (!$("#ov-rivers").checked) return;
+  const z = map.getZoom(), imax = maxImportance(z);
+  const b = z<=9 ? CONFIG.ain.bbox : map.getBounds().pad(.15).toBBoxString().split(",").map(Number);
+  const key = `${imax}|${b.map(v=>v.toFixed(2)).join(",")}`;
+  const imps = Array.from({length:imax},(_,i)=>`'${i+1}'`).join(",");
+  let gj = riverCache.get(key);
+  try{
+    if(!gj){
+      status("Chargement des cours d'eau…");
+      gj = fixAxes(await getJSON(wfsUrl("BDTOPO_V3:cours_d_eau", `importance IN (${imps}) AND ${bboxCQL(b)}`)));
+      riverCache.set(key, gj);
+    }
+    riverLayer.clearLayers(); lastRivers = gj;
+    L.geoJSON(gj,{style:riverStyle, onEachFeature:(f,l)=>{ if(f.properties.toponyme) l.bindTooltip(f.properties.toponyme,{sticky:true}); }}).addTo(riverLayer);
+    status(`${moulins.length} usine(s) · cours d'eau jusqu'au rang ${imax} affichés.`);
+  }catch(e){ status("Les cours d'eau IGN n'ont pas pu être chargés (service indisponible ou hors ligne).", true); }
+}
+map.on("moveend", () => { clearTimeout(riverTimer); riverTimer = setTimeout(()=>{loadRivers(); renderBV();}, 350); });
+$("#ov-rivers").onchange = e => e.target.checked ? (riverLayer.addTo(map), loadRivers()) : map.removeLayer(riverLayer);
+
+/* --- bassins versants emboîtés --- */
+/* Les codes hydrographiques sont hiérarchiques : V = Rhône, V2 = secteur, V27 = sous-secteur, V270 = zone.
+   On regroupe donc les bassins élémentaires par préfixe de code selon le zoom. */
+const bvLayer = L.layerGroup().addTo(map);
+let bvBase = null; const bvLevels = {};
+async function loadBV(){
+  try{
+    const gj = fixAxes(await getJSON(wfsUrl("BDTOPO_V3:bassin_versant_topographique", bboxCQL(CONFIG.ain.bbox), 3000)));
+    bvBase = gj.features.filter(f => f.geometry);
+    renderBV();
+  }catch(e){ status("Les bassins versants IGN n'ont pas pu être chargés.", true); }
+}
+function bvLevelFor(z){ return z<=8 ? 2 : z<=10 ? 3 : 4; }
+function groupBV(len){
+  if (bvLevels[len]) return bvLevels[len];
+  const groups = new Map();
+  for (const f of bvBase){
+    const code = String(f.properties.code_hydrographique||f.properties.code_du_bassin_versant||"").trim();
+    const k = code ? code.slice(0,len) : (f.properties.toponyme||"?");
+    if(!groups.has(k)) groups.set(k, []);
+    groups.get(k).push(f);
+  }
+  const out = [];
+  for (const [k, fs] of groups){
+    let geom = fs[0];
+    if (len < 4) { try { for (let i=1;i<fs.length;i++) geom = turf.union(geom, fs[i]) || geom; } catch(e){} }
+    const names = fs.map(f=>f.properties.toponyme).filter(Boolean);
+    out.push({type:"Feature", geometry:geom.geometry, properties:{code:k, nom: len<4 ? "" : (names[0]||""), n:fs.length}});
+  }
+  return (bvLevels[len] = {type:"FeatureCollection", features:out});
+}
+function renderBV(){
+  bvLayer.clearLayers();
+  if (!bvBase || !$("#ov-bv").checked) return;
+  const len = bvLevelFor(map.getZoom()), fc = groupBV(len);
+  const col = getComputedStyle(document.documentElement).getPropertyValue("--basin").trim();
+  L.geoJSON(fc,{pane:"bv", style:{color:col, weight: len===2?3:len===3?2:1.2, opacity:.9, fillColor:col, fillOpacity:.04},
+    onEachFeature:(f,l)=>{ const t = f.properties.nom ? `${f.properties.nom} (${f.properties.code})` : `Bassin ${f.properties.code}`;
+      l.bindTooltip(t,{sticky:true,className:"bv-label",direction:"center"}); }}).addTo(bvLayer);
+}
+$("#ov-bv").onchange = renderBV;
+
+/* ============================================================
+   MOULINS
+   ============================================================ */
+let moulins = [], hidden = new Set();
+const wheelLayer = L.layerGroup().addTo(map);
+const num = v => (v===null||v===undefined||v==="") ? null : Number(String(v).replace(",","."));
+function puissance(m){ const p = num(m.Puissance_brute_kW); if (p!==null && !isNaN(p)) return p;
+  const q=num(m.Debit_m3s), h=num(m.Hauteur_chute_m); return (q!==null && h!==null) ? 9.81*q*h : null; }
+
+function wheelSVG(t, size){
+  const s=size, r=s/2, spokes = Array.from({length:8},(_,i)=>{const a=i*Math.PI/4;
+    return `<line x1="${r}" y1="${r}" x2="${r+Math.cos(a)*(r-3)}" y2="${r+Math.sin(a)*(r-3)}"/>`}).join("");
+  const paddles = Array.from({length:12},(_,i)=>{const a=i*Math.PI/6, x=r+Math.cos(a)*(r-1.2), y=r+Math.sin(a)*(r-1.2);
+    return `<rect x="${x-1.6}" y="${y-1.6}" width="3.2" height="3.2" transform="rotate(${i*30} ${x} ${y})"/>`}).join("");
+  return `<svg class="wheel" width="${s}" height="${s}" viewBox="0 0 ${s} ${s}" aria-hidden="true">
+    <g fill="${t.stroke}">${paddles}</g>
+    <circle cx="${r}" cy="${r}" r="${r-3}" fill="${t.fill}" stroke="${t.stroke}" stroke-width="1.6"/>
+    <g stroke="${t.stroke}" stroke-width="1.2">${spokes}</g>
+    <circle cx="${r}" cy="${r}" r="${s/9}" fill="${t.stroke}"/></svg>`;
+}
+function renderWheels(){
+  wheelLayer.clearLayers();
+  const size = map.getZoom()>=13 ? 26 : 20;
+  for (const m of moulins){
+    const t = typeOf(m.Type);
+    if (hidden.has(t.k) || isNaN(num(m.Latitude)) || isNaN(num(m.Longitude))) continue;
+    L.marker([num(m.Latitude), num(m.Longitude)], {pane:"wheels", title:m.Nom||"",
+      icon: L.divIcon({className:"", html:wheelSVG(t,size), iconSize:[size,size], iconAnchor:[size/2,size/2]})})
+      .on("click", () => openFiche(m)).addTo(wheelLayer);
+  }
+}
+map.on("zoomend", renderWheels);
+
+function renderLegend(){
+  const el = $("#legend"); el.innerHTML="";
+  for (const t of TYPES){
+    const n = moulins.filter(m => typeOf(m.Type).k===t.k).length;
+    const lab = document.createElement("label"); lab.className="row";
+    lab.innerHTML = `<input type="checkbox" id="type-${norm(t.k)}" ${hidden.has(t.k)?"":"checked"}>${wheelSVG(t,18)}<span>${t.label}</span><span class="n">${n}</span>`;
+    lab.querySelector("input").onchange = e => { e.target.checked ? hidden.delete(t.k) : hidden.add(t.k); renderWheels(); };
+    el.appendChild(lab);
+  }
+}
+
+/* --- fiche --- */
+const esc = s => String(s??"").replace(/[&<>"]/g, c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
+const links = v => String(v||"").split(/[\s\n,;]+/).filter(u=>/^https?:\/\//.test(u));
+function fmt(v, isNum){ if(v===null||v===undefined||v==="") return "—"; if(isNum){const n=num(v); return isNaN(n)?esc(v):n.toLocaleString("fr-FR",{maximumFractionDigits:2});} return esc(v); }
+function gallery(urls, emptyMsg){
+  if(!urls.length) return `<div class="empty">${emptyMsg}</div>`;
+  return `<div class="gallery">${urls.map(u=>`<a href="${esc(u)}" target="_blank" rel="noopener"><img src="${esc(u)}" alt="" loading="lazy"></a>`).join("")}</div>`;
+}
+function openFiche(m){
+  const t = typeOf(m.Type), p = puissance(m);
+  const rows = FIELDS.map(([k,lab,isNum]) => {
+    const v = k==="Puissance_brute_kW" ? p : m[k];
+    return `<dt>${lab}</dt><dd class="${isNum?"num":""}">${fmt(v,isNum)}${k==="Puissance_brute_kW"&&p!==null&&num(m.Puissance_brute_kW)===null?' <span class="src">(calculée : 9,81 × Q × H)</span>':""}</dd>`;
+  }).join("");
+  const f = $("#fiche");
+  f.innerHTML = `<div class="head">${wheelSVG(t,34)}<div style="min-width:0">
+      ${m._exemple?'<div class="example">Exemple à remplacer</div>':""}
+      <h2>${esc(m.Nom||"Usine sans nom")}</h2>
+      <div class="sub">${esc(t.label)} · ${esc(m.Cours_d_eau||"cours d'eau ?")} · ${esc(m.Commune||"")}</div></div>
+      <button class="close" id="ficheClose" aria-label="Fermer la fiche">✕</button></div>
+    <div class="body">
+      <section><div class="label">Photos</div>${gallery(links(m.Photos),"Aucune photo pour l'instant. Ajoutez des liens d'images dans la colonne « Photos » du tableau Grist.")}</section>
+      <section><div class="label">Cartes anciennes</div>${gallery(links(m.Cartes_anciennes),"Aucune carte ancienne. Ajoutez des liens (cadastre napoléonien, Cassini…) dans la colonne « Cartes_anciennes ».")}
+        <div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:8px">
+          <button class="btn" id="seeEM">Voir l'état-major ici</button><button class="btn" id="see50">Voir la carte 1950 ici</button></div></section>
+      <section><div class="label">Carte d'identité</div><dl class="id">${rows}</dl></section>
+    </div>`;
+  f.hidden = false;
+  $("#ficheClose").onclick = () => f.hidden = true;
+  const zoomTo = k => { document.getElementById("base-"+k).click(); map.setView([num(m.Latitude),num(m.Longitude)], 15); };
+  $("#seeEM").onclick = () => zoomTo("em"); $("#see50").onclick = () => zoomTo("ign50");
+  if (window.grist && inGrist) { try{ grist.setCursorPos({rowId:m.id}); }catch(e){} }
+}
+
+/* --- récapitulatif par rivière principale puis par affluent --- */
+function renderRecap(){
+  const by = new Map();
+  for (const m of moulins){
+    const rp = m.Riviere_principale||"Non renseignée", af = m.Affluent||m.Cours_d_eau||"Non renseigné";
+    if(!by.has(rp)) by.set(rp,new Map()); const g=by.get(rp); if(!g.has(af)) g.set(af,[]); g.get(af).push(m);
+  }
+  const cols = [["Nom","Usine"],["Type","Type"],["Cours_d_eau","Cours d'eau"],["Commune","Commune"],["Etat","État"],
+    ["Hauteur_chute_m","H (m)",1],["Debit_m3s","Q (m³/s)",1],["Puissance_brute_kW","P brute (kW)",1],["Droit_d_eau","Droit d'eau"],["Premiere_mention","1re mention"]];
+  let html = "";
+  for (const [rp, afs] of [...by].sort((a,b)=>a[0].localeCompare(b[0],"fr"))){
+    const all = [...afs.values()].flat(), tot = all.reduce((s,m)=>s+(puissance(m)||0),0);
+    html += `<h3>${esc(rp)}</h3><div class="src">${all.length} usine(s) · ${tot.toLocaleString("fr-FR",{maximumFractionDigits:0})} kW bruts recensés</div>`;
+    for (const [af, ms] of [...afs].sort((a,b)=>a[0].localeCompare(b[0],"fr"))){
+      const t2 = ms.reduce((s,m)=>s+(puissance(m)||0),0);
+      html += `<details open><summary>${esc(af)}<span class="n">${ms.length} · ${t2.toLocaleString("fr-FR",{maximumFractionDigits:0})} kW</span></summary>
+        <div class="tbl-wrap"><table><thead><tr>${cols.map(c=>`<th>${c[1]}</th>`).join("")}</tr></thead><tbody>
+        ${ms.map(m=>`<tr class="click" data-id="${m.id}">${cols.map(([k,,n])=>`<td class="${n?"num":""}">${k==="Puissance_brute_kW"?fmt(puissance(m),1):k==="Type"?esc(typeOf(m.Type).label):fmt(m[k],n)}</td>`).join("")}</tr>`).join("")}
+        </tbody></table></div></details>`;
+    }
+  }
+  $("#recap").innerHTML = html || '<div class="empty">Aucune usine saisie pour l\'instant.</div>';
+  $("#recap").querySelectorAll("tr.click").forEach(tr => tr.onclick = () => {
+    const m = moulins.find(x=>String(x.id)===tr.dataset.id); if(!m) return;
+    map.setView([num(m.Latitude),num(m.Longitude)], 14); openFiche(m); });
+  const exp = document.createElement("button"); exp.className="btn"; exp.id="copyCsv"; exp.textContent="Copier le tableau (CSV)";
+  exp.style.marginTop="14px"; exp.onclick = copyCSV; $("#recap").appendChild(exp);
+}
+function copyCSV(){
+  const keys = ["Riviere_principale","Affluent","Cours_d_eau","Nom","Type","Commune",...FIELDS.map(f=>f[0]).filter(k=>!["Riviere_principale","Affluent","Cours_d_eau","Type","Commune"].includes(k)),"Latitude","Longitude"];
+  const q = v => `"${String(v??"").replace(/"/g,'""')}"`;
+  const csv = [keys.join(";"), ...moulins.map(m=>keys.map(k=>q(k==="Puissance_brute_kW"?(puissance(m)?.toFixed(2)??""):m[k])).join(";"))].join("\n");
+  navigator.clipboard.writeText(csv).then(()=>$("#copyCsv").textContent="Copié ✓").catch(()=>$("#copyCsv").textContent="Copie refusée par le navigateur");
+}
+
+function setData(rows, label){
+  moulins = rows; $("#datasrc").textContent = label;
+  renderLegend(); renderWheels(); renderRecap();
+  status(`${moulins.length} usine(s) affichée(s).`);
+}
+
+/* ============================================================
+   PLACER UN MOULIN : clic sur la carte → fiche pré-remplie → Grist
+   ============================================================ */
+let placing = false, draft = null;
+const draftIcon = L.divIcon({className:"", html:wheelSVG({fill:"#ffffff",stroke:"#a4462a"},30), iconSize:[30,30], iconAnchor:[15,15]});
+function setPlacing(on){
+  placing = on; document.body.classList.toggle("placing", on);
+  $("#placeBtn").setAttribute("aria-pressed", on); $("#placeBtn").textContent = on ? "✕ Annuler" : "＋ Placer un moulin";
+  if (on) { status("Cliquez sur la rivière à l'emplacement du moulin (zoomez pour plus de précision)."); if (map.getZoom()<13) map.setZoom(13); }
+  else { if (draft) { map.removeLayer(draft); draft=null; } }
+}
+$("#placeBtn").onclick = () => setPlacing(!placing);
+map.on("click", e => { if (placing) startDraft(e.latlng); });
+
+function nearestRiver(latlng){
+  if (!lastRivers) return null;
+  const pt = turf.point([latlng.lng, latlng.lat]); let best = null;
+  for (const f of lastRivers.features){
+    if (!f.geometry || !/LineString/.test(f.geometry.type)) continue;
+    try { const n = turf.nearestPointOnLine(f, pt, {units:"kilometers"});
+      if (!best || n.properties.dist < best.dist) best = {dist:n.properties.dist, coords:n.geometry.coordinates, name:f.properties.toponyme||""}; } catch(e){}
+  }
+  return best;
+}
+async function communeAt(lat, lon){
+  try { const j = await getJSON(`https://geo.api.gouv.fr/communes?lat=${lat}&lon=${lon}&fields=nom&format=json`); return j[0]?.nom || ""; }
+  catch(e){ return ""; }
+}
+function startDraft(latlng){
+  const near = nearestRiver(latlng);
+  let pos = latlng, snapped = false;
+  if (near && near.dist < 0.15) { pos = L.latLng(near.coords[1], near.coords[0]); snapped = true; }
+  if (draft) map.removeLayer(draft);
+  draft = L.marker(pos, {icon:draftIcon, draggable:true, pane:"wheels", zIndexOffset:1000}).addTo(map);
+  draft.on("dragend", () => { const p = draft.getLatLng(); $("#f-lat").value = p.lat.toFixed(6); $("#f-lon").value = p.lng.toFixed(6);
+    communeAt(p.lat, p.lng).then(c => { if (c) $("#f-commune").value = c; }); });
+  openForm(pos, near, snapped);
+  communeAt(pos.lat, pos.lng).then(c => { const el = $("#f-commune"); if (el && !el.value) el.value = c; });
+}
+function datalist(id, key){
+  const vals = [...new Set(moulins.map(m=>m[key]).filter(Boolean))].sort((a,b)=>String(a).localeCompare(String(b),"fr"));
+  return `<datalist id="${id}">${vals.map(v=>`<option value="${esc(v)}">`).join("")}</datalist>`;
+}
+function openForm(pos, near, snapped){
+  let who = ""; try { who = localStorage.getItem("contributeur") || ""; } catch(e){}
+  const river = near && near.dist < 0.5 ? near.name : "";
+  const where = MODE==="widget" ? "Elle sera enregistrée directement dans Grist."
+    : MODE==="api" ? "Elle sera enregistrée dans Grist avec votre clé API (panneau de gauche)."
+    : "Carte non reliée à Grist : la fiche s'affichera mais ne sera pas enregistrée.";
+  const f = $("#fiche");
+  f.innerHTML = `<div class="head"><div style="min-width:0"><div class="label" style="margin:0">Nouvelle usine</div>
+      <h2>Placer un moulin</h2><div class="sub">${snapped?"Position calée sur le cours d'eau le plus proche. ":""}Faites glisser la roue pour ajuster.</div></div>
+      <button class="close" id="ficheClose" aria-label="Annuler">✕</button></div>
+    <div class="body"><form class="add" id="addForm" novalidate>
+      <div class="note ${MODE==="demo"?"":"ok"}">${where}</div>
+      <label>Nom de l'usine<input id="f-nom" required placeholder="ex. Moulin du Pont"></label>
+      <label>Type d'usine<select id="f-type">${TYPES.map(t=>`<option value="${esc(t.k)}">${esc(t.label)}</option>`).join("")}</select></label>
+      <label>Cours d'eau (où tourne la roue)<input id="f-ce" list="dl-ce" value="${esc(river)}"></label>
+      <div class="two">
+        <label>Affluent de<input id="f-aff" list="dl-aff" placeholder="ex. Albarine"></label>
+        <label>Rivière principale<input id="f-rp" list="dl-rp" placeholder="Ain, Rhône, Saône…"></label>
+      </div>
+      <label>Commune<input id="f-commune"></label>
+      <div class="two">
+        <label>Latitude<input id="f-lat" inputmode="decimal" value="${pos.lat.toFixed(6)}"></label>
+        <label>Longitude<input id="f-lon" inputmode="decimal" value="${pos.lng.toFixed(6)}"></label>
+      </div>
+      <label>État actuel<select id="f-etat"><option>Inconnu</option><option>En activité</option><option>Transformé</option><option>Vestiges</option><option>Disparu</option></select></label>
+      <div class="two">
+        <label>Hauteur de chute (m)<input id="f-h" inputmode="decimal"></label>
+        <label>Débit (m³/s)<input id="f-q" inputmode="decimal"></label>
+      </div>
+      <label>Saisi par<input id="f-who" value="${esc(who)}"></label>
+      <div class="hint">Les autres champs de la fiche (droit d'eau, photos, sources…) se complètent ensuite dans Grist.</div>
+      <div class="actions"><button class="btn primary" type="submit" id="f-save">Enregistrer</button><button class="btn" type="button" id="f-cancel">Annuler</button></div>
+      <div id="f-msg"></div>
+      ${datalist("dl-ce","Cours_d_eau")}${datalist("dl-aff","Affluent")}${datalist("dl-rp","Riviere_principale")}
+    </form></div>`;
+  f.hidden = false;
+  const cancel = () => { f.hidden = true; setPlacing(false); };
+  $("#ficheClose").onclick = cancel; $("#f-cancel").onclick = cancel;
+  $("#f-ce").addEventListener("change", e => { if (!$("#f-aff").value) $("#f-aff").value = e.target.value; });
+  if (river && !$("#f-aff").value) $("#f-aff").value = river;
+  $("#addForm").addEventListener("submit", saveDraft);
+  $("#f-nom").focus();
+}
+async function saveDraft(e){
+  e.preventDefault();
+  const v = id => $(id).value.trim(), n = id => { const x = num(v(id)); return (x===null||isNaN(x)) ? null : x; };
+  const msg = (t, err) => { $("#f-msg").innerHTML = `<div class="note ${err?"":"ok"}">${esc(t)}</div>`; };
+  if (!v("#f-nom")) { msg("Donnez un nom à l'usine avant d'enregistrer.", true); $("#f-nom").focus(); return; }
+  const lat = n("#f-lat"), lon = n("#f-lon");
+  if (lat===null || lon===null) { msg("Latitude et longitude doivent être des nombres.", true); return; }
+  try { localStorage.setItem("contributeur", v("#f-who")); } catch(_){}
+  const fields = { Nom:v("#f-nom"), Type:v("#f-type"), Cours_d_eau:v("#f-ce"), Affluent:v("#f-aff"), Riviere_principale:v("#f-rp"),
+    Commune:v("#f-commune"), Latitude:lat, Longitude:lon, Etat:v("#f-etat"), Hauteur_chute_m:n("#f-h"), Debit_m3s:n("#f-q"),
+    Contributeur:v("#f-who"), Mis_a_jour:new Date().toISOString().slice(0,10) };
+  for (const k in fields) if (fields[k]==="" || fields[k]===null) delete fields[k];
+  $("#f-save").disabled = true; $("#f-save").textContent = "Enregistrement…";
+  try {
+    if (MODE === "widget") {
+      await grist.selectedTable.create({fields});           // la carte se met à jour via onRecords
+    } else if (MODE === "api") {
+      let key = ""; try { key = localStorage.getItem("gristKey") || ""; } catch(_){}
+      key = key || $("#apiKey").value.trim();
+      if (!key) throw new Error("Saisissez votre clé API Grist dans le panneau de gauche (Grist → Paramètres du profil → API).");
+      const r = await fetch(`${server}/api/docs/${docId}/tables/${CONFIG.gristTable}/records`, {method:"POST",
+        headers:{"Authorization":`Bearer ${key}`,"Content-Type":"application/json"}, body:JSON.stringify({records:[{fields}]})});
+      if (!r.ok) throw new Error(`Grist a refusé l'enregistrement (code ${r.status}). Vérifiez la clé API et vos droits d'édition.`);
+      const j = await r.json();
+      setData([...moulins, {id:j.records?.[0]?.id ?? Date.now(), ...fields}], "document Grist partagé");
+    } else {
+      setData([...moulins, {id:Date.now(), ...fields, _local:true}], "données d'exemple");
+    }
+    const saved = moulins.find(m => m.Nom===fields.Nom && num(m.Latitude)===lat) || {id:0,...fields};
+    setPlacing(false);
+    openFiche(saved);
+    status(MODE==="demo" ? `« ${fields.Nom} » ajouté à l'écran seulement : reliez la carte à Grist pour l'enregistrer.` : `« ${fields.Nom} » enregistré dans Grist.`, MODE==="demo");
+  } catch(err) {
+    msg(err.message || "L'enregistrement a échoué.", true);
+    $("#f-save").disabled = false; $("#f-save").textContent = "Enregistrer";
+  }
+}
+
+/* --- onglets & mobile --- */
+document.querySelectorAll(".tabs button").forEach(b => b.onclick = () => {
+  document.querySelectorAll(".tabs button").forEach(x=>x.setAttribute("aria-selected", x===b));
+  $("#pane-carte").hidden = b.dataset.tab!=="carte"; $("#pane-recap").hidden = b.dataset.tab!=="recap"; });
+$("#toggleSide").onclick = () => document.body.classList.toggle("side-open");
+
+/* ============================================================
+   SOURCE DES DONNÉES : 1) widget dans Grist  2) API Grist  3) exemples
+   ============================================================ */
+const inGrist = window.grist && window.parent !== window;
+const qs = new URLSearchParams(location.search);
+const docId = qs.get("grist") || CONFIG.gristDocId;
+const server = qs.get("server") || CONFIG.gristServer;
+const MODE = inGrist ? "widget" : docId ? "api" : "demo";
+if (MODE === "api") {
+  $("#keyBox").hidden = false;
+  try { $("#apiKey").value = localStorage.getItem("gristKey") || ""; } catch(e){}
+  $("#apiKey").onchange = e => { try { localStorage.setItem("gristKey", e.target.value.trim()); } catch(_){} };
+}
+if (inGrist){
+  grist.ready({requiredAccess:"full"});
+  grist.onRecords(recs => setData(recs, "tableau Grist (temps réel)"));
+  grist.onRecord(rec => { const m = moulins.find(x=>x.id===rec.id); if(m && $("#fiche").hidden===false) openFiche(m); });
+} else if (docId){
+  getJSON(`${server}/api/docs/${docId}/tables/${CONFIG.gristTable}/records`)
+    .then(j => setData(j.records.map(r=>({id:r.id, ...r.fields})), "document Grist partagé"))
+    .catch(() => { status("Le document Grist n'a pas pu être lu : vérifiez qu'il est partagé en lecture publique.", true);
+      setData(EXEMPLES.map(m=>({...m,_exemple:true})), "données d'exemple (Grist inaccessible)"); });
+} else {
+  setData(EXEMPLES.map(m=>({...m,_exemple:true})), "données d'exemple");
+}
+loadRivers(); loadBV();
+</script>
+</body>
+</html>
