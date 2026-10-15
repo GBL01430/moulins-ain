@@ -312,7 +312,7 @@ async function loadRivers(){
   try{
     if(!gj){
       status("Chargement des cours d'eau…");
-      gj = await fetchAll("BDTOPO_V3:troncon_hydrographique", `numero_d_ordre >= ${omin} AND fictif = false AND ${bboxCQL(b)}`,
+      gj = await fetchAll("BDTOPO_V3:troncon_hydrographique", `numero_d_ordre >= ${omin} AND ${bboxCQL(b)}`,
         "numero_d_ordre,cpx_toponyme_de_cours_d_eau,geometrie");
       gj.features.sort((a,c)=>(a.properties.numero_d_ordre||0)-(c.properties.numero_d_ordre||0));
       riverCache.set(key, gj);
