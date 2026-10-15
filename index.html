@@ -281,31 +281,45 @@ getJSON(wfsUrl("ADMINEXPRESS-COG-CARTO.LATEST:departement","code_insee='01'",1))
   .then(gj => L.geoJSON(fixAxes(gj),{interactive:false,style:{color:"#7a2f1d",weight:2,dashArray:"6 4",fill:false}}).addTo(map))
   .catch(()=>{});
 
-/* --- cours d'eau hiérarchisés (BD TOPO « importance » 1 = fleuve … 6 = ruisseau) --- */
-const WIDTH = {"1":6,"2":4.5,"3":3.2,"4":2.2,"5":1.5,"6":1};
+/* --- cours d'eau hiérarchisés par ordre de Strahler (BD TOPO, tronçons) : 1 = ru de tête … 8 = Rhône/Saône --- */
+const WIDTH = o => o>=8?6.5 : o>=7?5.2 : o>=6?4.2 : o>=5?3.2 : o>=4?2.3 : o>=3?1.7 : o>=2?1.2 : 0.9;
 const riverLayer = L.layerGroup().addTo(map);
 const riverCache = new Map();
 let lastRivers = null;
-function maxImportance(z){ return z<=9?3 : z<=10?4 : z<=12?5 : 6; }
-function riverStyle(f){ const i=String(f.properties.importance||"6"); return {pane:"rivers",color:getComputedStyle(document.documentElement).getPropertyValue("--water").trim()||"#1f6fa8",
-  weight:(WIDTH[i]||1)*(map.getZoom()>=13?1.4:1), opacity:.95, lineCap:"round"}; }
+function minOrder(z){ return z<=9?4 : z<=10?3 : z<=11?2 : 1; }
+const nameOf = p => p.cpx_toponyme_de_cours_d_eau || p.toponyme || "";
+function riverStyle(f){ const o=Number(f.properties.numero_d_ordre)||1;
+  return {pane:"rivers",color:getComputedStyle(document.documentElement).getPropertyValue("--water").trim()||"#1f6fa8",
+  weight:WIDTH(o)*(map.getZoom()>=13?1.3:1), opacity:.95, lineCap:"round", lineJoin:"round"}; }
 let riverTimer;
+async function fetchAll(typename, cql, props){
+  const feats=[]; let start=0;
+  for (let page=0; page<8; page++){
+    const p = new URLSearchParams({SERVICE:"WFS",VERSION:"2.0.0",REQUEST:"GetFeature",TYPENAMES:typename,OUTPUTFORMAT:"application/json",
+      SRSNAME:"EPSG:4326",COUNT:"5000",STARTINDEX:String(start),CQL_FILTER:cql});
+    if (props) p.set("PROPERTYNAME", props);
+    const j = await getJSON(`${CONFIG.wfs}?${p}`); feats.push(...j.features);
+    if (j.features.length < 5000) break; start += 5000;
+  }
+  return fixAxes({type:"FeatureCollection", features:feats});
+}
 async function loadRivers(){
   if (!$("#ov-rivers").checked) return;
-  const z = map.getZoom(), imax = maxImportance(z);
+  const z = map.getZoom(), omin = minOrder(z);
   const b = z<=9 ? CONFIG.ain.bbox : map.getBounds().pad(.15).toBBoxString().split(",").map(Number);
-  const key = `${imax}|${b.map(v=>v.toFixed(2)).join(",")}`;
-  const imps = Array.from({length:imax},(_,i)=>`'${i+1}'`).join(",");
+  const key = `${omin}|${b.map(v=>v.toFixed(2)).join(",")}`;
   let gj = riverCache.get(key);
   try{
     if(!gj){
       status("Chargement des cours d'eau…");
-      gj = fixAxes(await getJSON(wfsUrl("BDTOPO_V3:cours_d_eau", `importance IN (${imps}) AND ${bboxCQL(b)}`)));
+      gj = await fetchAll("BDTOPO_V3:troncon_hydrographique", `numero_d_ordre >= ${omin} AND fictif = false AND ${bboxCQL(b)}`,
+        "numero_d_ordre,cpx_toponyme_de_cours_d_eau,geometrie");
+      gj.features.sort((a,c)=>(a.properties.numero_d_ordre||0)-(c.properties.numero_d_ordre||0));
       riverCache.set(key, gj);
     }
     riverLayer.clearLayers(); lastRivers = gj;
-    L.geoJSON(gj,{style:riverStyle, onEachFeature:(f,l)=>{ if(f.properties.toponyme) l.bindTooltip(f.properties.toponyme,{sticky:true}); }}).addTo(riverLayer);
-    status(`${moulins.length} usine(s) · cours d'eau jusqu'au rang ${imax} affichés.`);
+    L.geoJSON(gj,{style:riverStyle, onEachFeature:(f,l)=>{ const n=nameOf(f.properties); if(n) l.bindTooltip(n,{sticky:true}); }}).addTo(riverLayer);
+    status(`${moulins.length} usine(s) · cours d'eau d'ordre ${omin} et plus affichés${omin>1?" (zoomez pour les plus petits)":""}.`);
   }catch(e){ status("Les cours d'eau IGN n'ont pas pu être chargés (service indisponible ou hors ligne).", true); }
 }
 map.on("moveend", () => { clearTimeout(riverTimer); riverTimer = setTimeout(()=>{loadRivers(); renderBV();}, 350); });
@@ -323,12 +337,17 @@ async function loadBV(){
     renderBV();
   }catch(e){ status("Les bassins versants IGN n'ont pas pu être chargés.", true); }
 }
-function bvLevelFor(z){ return z<=8 ? 2 : z<=10 ? 3 : 4; }
+function bvLevelFor(z){ return z<=9 ? 2 : z<=11 ? 3 : 4; }
+/* Nom d'un groupe : la rivière la plus citée dans les noms des bassins élémentaires
+   (« L'Ain du Suran à l'Albarine » → « L'Ain ») */
+function riverFromBV(t){ return String(t||"").split(/\s(?:de la|de l'|du|des|de|depuis|à|au|aux|en amont|en aval)\s/i)[0].trim(); }
+function groupName(fs){ const c={}; fs.forEach(f=>{const r=riverFromBV(f.properties.toponyme); if(r) c[r]=(c[r]||0)+1;});
+  return Object.entries(c).sort((a,b)=>b[1]-a[1])[0]?.[0] || ""; }
 function groupBV(len){
   if (bvLevels[len]) return bvLevels[len];
   const groups = new Map();
   for (const f of bvBase){
-    const code = String(f.properties.code_hydrographique||f.properties.code_du_bassin_versant||"").trim();
+    const code = String(f.properties.code_bdcarthage||"").trim();
     const k = code ? code.slice(0,len) : (f.properties.toponyme||"?");
     if(!groups.has(k)) groups.set(k, []);
     groups.get(k).push(f);
@@ -338,7 +357,7 @@ function groupBV(len){
     let geom = fs[0];
     if (len < 4) { try { for (let i=1;i<fs.length;i++) geom = turf.union(geom, fs[i]) || geom; } catch(e){} }
     const names = fs.map(f=>f.properties.toponyme).filter(Boolean);
-    out.push({type:"Feature", geometry:geom.geometry, properties:{code:k, nom: len<4 ? "" : (names[0]||""), n:fs.length}});
+    out.push({type:"Feature", geometry:geom.geometry, properties:{code:k, nom: len<4 ? groupName(fs) : (names[0]||""), n:fs.length}});
   }
   return (bvLevels[len] = {type:"FeatureCollection", features:out});
 }
@@ -492,7 +511,7 @@ function nearestRiver(latlng){
   for (const f of lastRivers.features){
     if (!f.geometry || !/LineString/.test(f.geometry.type)) continue;
     try { const n = turf.nearestPointOnLine(f, pt, {units:"kilometers"});
-      if (!best || n.properties.dist < best.dist) best = {dist:n.properties.dist, coords:n.geometry.coordinates, name:f.properties.toponyme||""}; } catch(e){}
+      if (!best || n.properties.dist < best.dist) best = {dist:n.properties.dist, coords:n.geometry.coordinates, name:nameOf(f.properties)}; } catch(e){}
   }
   return best;
 }
