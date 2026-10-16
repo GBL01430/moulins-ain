@@ -41,6 +41,7 @@ button{font:inherit;color:inherit}
 .label{font-size:11px;text-transform:uppercase;letter-spacing:.09em;color:var(--muted);font-weight:600;margin-bottom:6px}
 .bases{display:grid;grid-template-columns:1fr 1fr;gap:6px}
 .bases button{border:1px solid var(--line);background:var(--bg);border-radius:6px;padding:7px 8px;cursor:pointer;text-align:left;font-size:13px}
+.bases button:last-child:nth-child(odd){grid-column:span 2}
 .bases button[aria-pressed="true"]{border-color:var(--water);background:var(--water-soft);font-weight:600}
 .row{display:flex;align-items:center;gap:8px;padding:3px 0;cursor:pointer}
 .row input{accent-color:var(--water)}
@@ -195,9 +196,10 @@ const TYPES = [
   {k:"Métaux",        label:"Travail des métaux",    fill:"#d23a2c", stroke:"#4a0b05"},
   {k:"Pierre",        label:"Travail de la pierre",  fill:"#8b4fc6", stroke:"#2a0f45"},
   {k:"Textile",       label:"Textile",               fill:"#2f74d0", stroke:"#0b2552"},
-  {k:"Autre",         label:"Autres usines",         fill:"#9aa3a6", stroke:"#2f3536"},
+  {k:"Autre",         label:"Autres usines",         fill:"#7f8a8e", stroke:"#262c2e"},
+  {k:"Non déterminé", label:"Non déterminé",         fill:"#d3d7d9", stroke:"#6b7376", dash:true},
 ];
-const typeOf = k => TYPES.find(t => norm(t.k) === norm(k)) || TYPES[TYPES.length-1];
+const typeOf = k => TYPES.find(t => norm(t.k) === norm(k)) || TYPES[TYPES.length-1]; // vide ou inconnu → Non déterminé
 function norm(s){return String(s||"").normalize("NFD").replace(/[̀-ͯ]/g,"").toLowerCase().trim()}
 
 /* Colonnes de la fiche d'identité, dans l'ordre d'affichage (= colonnes Grist) */
@@ -207,7 +209,7 @@ const FIELDS = [
   ["Hauteur_chute_m","Hauteur de chute (m)",1],["Debit_m3s","Débit (m³/s)",1],["Puissance_brute_kW","Puissance brute (kW)",1],
   ["Droit_d_eau","Droit d'eau"],["Nb_roues","Nombre de roues",1],["Type_roue","Roue / turbine"],
   ["Proprietaire","Propriétaire"],["Protection","Protection"],["Code_ROE","Code ROE"],
-  ["Sources","Sources"],["Notes","Notes"],["Contributeur","Saisi par"],["Mis_a_jour","Mis à jour"],
+  ["Sources","Sources"],["Notes","Notes"],["Origine","Origine de la fiche"],["Contributeur","Saisi par"],["Mis_a_jour","Mis à jour"],
 ];
 
 /* Données d'exemple — à remplacer par le document Grist */
@@ -247,6 +249,8 @@ const BASES = {
   ortho:  {label:"Vue aérienne",       layer: wmts("ORTHOIMAGERY.ORTHOPHOTOS","image/jpeg",19)},
   em:     {label:"État-major 1820-66", layer: wms("GEOGRAPHICALGRIDSYSTEMS.ETATMAJOR40","image/jpeg",{maxNativeZoom:16})},
   ign50:  {label:"Carte IGN 1950",     layer: wms("GEOGRAPHICALGRIDSYSTEMS.MAPS.SCAN50.1950","image/jpeg",{maxNativeZoom:16})},
+  cassini:{label:"Cassini (XVIIIe)",   layer: L.tileLayer(`${CONFIG.wmts}?SERVICE=WMTS&REQUEST=GetTile&VERSION=1.0.0&LAYER=AN-IGNF_GEOGRAPHICALGRIDSYSTEMS.CASSINI&STYLE=normal&TILEMATRIXSET=PM_0_14&TILEMATRIX={z}&TILEROW={y}&TILECOL={x}&FORMAT=image/jpeg`,
+            {maxZoom:19, maxNativeZoom:14, attribution:attrIGN+" · Archives nationales"})},
 };
 const cadastre = wms("CADASTRALPARCELS.PARCELLAIRE_EXPRESS","image/png",{minZoom:13, opacity:.85});
 let currentBase = "plan";
@@ -345,6 +349,68 @@ function bvLevelFor(z){ return z<=9 ? 2 : z<=11 ? 3 : 4; }
 function riverFromBV(t){ return String(t||"").split(/\s(?:de la|de l'|du|des|de|depuis|à|au|aux|en amont|en aval)\s/i)[0].trim(); }
 function groupName(fs){ const c={}; fs.forEach(f=>{const r=riverFromBV(f.properties.toponyme); if(r) c[r]=(c[r]||0)+1;});
   return Object.entries(c).sort((a,b)=>b[1]-a[1])[0]?.[0] || ""; }
+/* ============================================================
+   RATTACHEMENT HYDROGRAPHIQUE AUTOMATIQUE
+   Cours d'eau (où tourne la roue) → Affluent (rivière importante : Albarine, Oignin, Valserine, Reyssouze…)
+   → Rivière principale (Rhône, Ain ou Saône).
+   Fondé sur les zones hydrographiques BD Carthage (code V250 : secteur V2 = Ain, sous-secteur V25, zone V250)
+   et sur leurs noms (« L'Oignin de sa source à la Doye incluse »).
+   ============================================================ */
+const MAIN = ["Rhône","Ain","Saône"];
+const nrm = s => String(s||"").normalize("NFD").replace(/[̀-ͯ]/g,"").toLowerCase().replace(/[’']/g,"'").trim();
+function cleanRiver(n){
+  let s = String(n||"").trim().replace(/^(l['’]\s*|le\s+|la\s+|les\s+)/i,"");
+  return s ? s.charAt(0).toUpperCase()+s.slice(1) : "";
+}
+function riverOfZone(t){ return cleanRiver(String(t||"").split(/\s(?:de la|de l['’]|du|des|de|depuis|à|au|aux|en amont|en aval)\s/i)[0]); }
+function isSegment(t){ return /\s(?:de la|de l['’]|du|des|de|à|au|aux)\s/i.test(String(t||"")); }
+function principalOf(code){ return code.startsWith("U") ? "Saône" : code.startsWith("V2") ? "Ain" : "Rhône"; }
+function pointInRing(x,y,ring){ let inside=false; for(let i=0,j=ring.length-1;i<ring.length;j=i++){
+  const [xi,yi]=ring[i],[xj,yj]=ring[j]; if(((yi>y)!==(yj>y)) && (x < (xj-xi)*(y-yi)/(yj-yi)+xi)) inside=!inside; } return inside; }
+function pointInGeom(x,y,g){ const polys = g.type==="Polygon" ? [g.coordinates] : g.type==="MultiPolygon" ? g.coordinates : [];
+  return polys.some(p => pointInRing(x,y,p[0]) && !p.slice(1).some(h=>pointInRing(x,y,h))); }
+
+function buildHydroIndex(features){
+  const zones = features.filter(f=>f.geometry && f.properties.code_bdcarthage).map(f => {
+    const code = String(f.properties.code_bdcarthage).trim(), t = f.properties.toponyme || "";
+    return {f, code, t, zr: riverOfZone(t), seg: isSegment(t)};
+  });
+  for (const z of zones){
+    let aff;
+    if (MAIN.includes(z.zr) || z.seg) aff = z.zr;                 // tronçon d'une rivière : la rivière elle-même
+    else {                                                          // petit affluent entier (« Le Valouson ») : la rivière qui le cite
+      const host = zones.find(o => o!==z && o.code.slice(0,3)===z.code.slice(0,3) && !MAIN.includes(o.zr) && nrm(o.t).includes(nrm(z.zr)));
+      if (host) aff = host.zr;
+      else {
+        const c = {}; zones.filter(o=>o.code.slice(0,3)===z.code.slice(0,3) && o!==z && !MAIN.includes(o.zr)).forEach(o=>c[o.zr]=(c[o.zr]||0)+1);
+        aff = Object.entries(c).sort((a,b)=>b[1]-a[1])[0]?.[0] || z.zr;
+      }
+    }
+    z.affluent = aff || principalOf(z.code);
+    z.principale = MAIN.includes(z.affluent) ? z.affluent : principalOf(z.code);
+  }
+  const byRiver = new Map();
+  zones.forEach(z => { if (z.zr && !MAIN.includes(z.zr) && !byRiver.has(nrm(z.zr))) byRiver.set(nrm(z.zr), z); });
+  return {zones, byRiver};
+}
+function hydroLookup(H, lat, lon, coursDeau){
+  const ce = cleanRiver(coursDeau);
+  if (ce && MAIN.includes(ce)) return {affluent: ce, principale: ce};
+  const known = ce && H.byRiver.get(nrm(ce));
+  if (known) return {affluent: known.affluent, principale: known.principale};
+  const z = H.zones.find(z => pointInGeom(lon, lat, z.f.geometry));
+  if (!z) return {affluent:"", principale:""};
+  // zone du cours principal qui « inclut » ce cours d'eau (« La Saône de la Chalaronne incluse à l'Ardière »)
+  if (ce && MAIN.includes(z.zr) && nrm(z.t).includes(nrm(ce))) return {affluent: ce, principale: z.zr};
+  return {affluent: z.affluent, principale: z.principale};
+}
+let HYDRO = null;
+function hydroFor(lat, lon, coursDeau){
+  if (!HYDRO && bvBase) HYDRO = buildHydroIndex(bvBase);
+  return HYDRO ? hydroLookup(HYDRO, lat, lon, coursDeau) : {affluent:"", principale:""};
+}
+window.hydroFor = hydroFor;
+
 function groupBV(len){
   if (bvLevels[len]) return bvLevels[len];
   const groups = new Map();
@@ -377,20 +443,22 @@ $("#ov-bv").onchange = renderBV;
 /* ============================================================
    MOULINS
    ============================================================ */
-let moulins = [], hidden = new Set();
+let moulins = [], hidden = new Set(), hideAuto = false;
+const isAuto = m => m.A_verifier === true || m.A_verifier === "true" || m.A_verifier === 1;
 const wheelLayer = L.layerGroup().addTo(map);
 const num = v => (v===null||v===undefined||v==="") ? null : Number(String(v).replace(",","."));
 function puissance(m){ const p = num(m.Puissance_brute_kW); if (p!==null && !isNaN(p)) return p;
   const q=num(m.Debit_m3s), h=num(m.Hauteur_chute_m); return (q!==null && h!==null) ? 9.81*q*h : null; }
 
-function wheelSVG(t, size){
+function wheelSVG(t, size, opts={}){
   const s=size, r=s/2, spokes = Array.from({length:8},(_,i)=>{const a=i*Math.PI/4;
     return `<line x1="${r}" y1="${r}" x2="${r+Math.cos(a)*(r-3)}" y2="${r+Math.sin(a)*(r-3)}"/>`}).join("");
   const paddles = Array.from({length:12},(_,i)=>{const a=i*Math.PI/6, x=r+Math.cos(a)*(r-1.2), y=r+Math.sin(a)*(r-1.2);
     return `<rect x="${x-1.6}" y="${y-1.6}" width="3.2" height="3.2" transform="rotate(${i*30} ${x} ${y})"/>`}).join("");
-  return `<svg class="wheel" width="${s}" height="${s}" viewBox="0 0 ${s} ${s}" aria-hidden="true">
+  return `<svg class="wheel" width="${s}" height="${s}" viewBox="0 0 ${s} ${s}" aria-hidden="true" style="opacity:${opts.faded?.6:1}">
     <g fill="${t.stroke}">${paddles}</g>
-    <circle cx="${r}" cy="${r}" r="${r-3}" fill="${t.fill}" stroke="${t.stroke}" stroke-width="1.6"/>
+    <circle cx="${r}" cy="${r}" r="${r-3}" fill="${t.fill}" stroke="${t.stroke}" stroke-width="1.6" ${t.dash?'stroke-dasharray="2.5 1.8"':''}/>
+    ${opts.faded?`<circle cx="${r}" cy="${r}" r="${r-0.8}" fill="none" stroke="#a4462a" stroke-width="1.4" stroke-dasharray="2 2"/>`:""}
     <g stroke="${t.stroke}" stroke-width="1.2">${spokes}</g>
     <circle cx="${r}" cy="${r}" r="${s/9}" fill="${t.stroke}"/></svg>`;
 }
@@ -399,9 +467,9 @@ function renderWheels(){
   const size = map.getZoom()>=13 ? 26 : 20;
   for (const m of moulins){
     const t = typeOf(m.Type);
-    if (hidden.has(t.k) || isNaN(num(m.Latitude)) || isNaN(num(m.Longitude))) continue;
-    L.marker([num(m.Latitude), num(m.Longitude)], {pane:"wheels", title:m.Nom||"",
-      icon: L.divIcon({className:"", html:wheelSVG(t,size), iconSize:[size,size], iconAnchor:[size/2,size/2]})})
+    if (hidden.has(t.k) || (hideAuto && isAuto(m)) || isNaN(num(m.Latitude)) || isNaN(num(m.Longitude))) continue;
+    L.marker([num(m.Latitude), num(m.Longitude)], {pane:"wheels", title:(m.Nom||"")+(isAuto(m)?" (à vérifier)":""),
+      icon: L.divIcon({className:"", html:wheelSVG(t,size,{faded:isAuto(m)}), iconSize:[size,size], iconAnchor:[size/2,size/2]})})
       .on("click", () => openFiche(m)).addTo(wheelLayer);
   }
 }
@@ -414,6 +482,13 @@ function renderLegend(){
     const lab = document.createElement("label"); lab.className="row";
     lab.innerHTML = `<input type="checkbox" id="type-${norm(t.k)}" ${hidden.has(t.k)?"":"checked"}>${wheelSVG(t,18)}<span>${t.label}</span><span class="n">${n}</span>`;
     lab.querySelector("input").onchange = e => { e.target.checked ? hidden.delete(t.k) : hidden.add(t.k); renderWheels(); };
+    el.appendChild(lab);
+  }
+  const nAuto = moulins.filter(isAuto).length;
+  if (nAuto){
+    const lab = document.createElement("label"); lab.className="row"; lab.style.marginTop="6px";
+    lab.innerHTML = `<input type="checkbox" id="type-auto" ${hideAuto?"":"checked"}>${wheelSVG(TYPES[TYPES.length-1],18,{faded:true})}<span>Repérés automatiquement, à vérifier</span><span class="n">${nAuto}</span>`;
+    lab.querySelector("input").onchange = e => { hideAuto = !e.target.checked; renderWheels(); };
     el.appendChild(lab);
   }
 }
@@ -434,7 +509,7 @@ function openFiche(m){
   }).join("");
   const f = $("#fiche");
   f.innerHTML = `<div class="head">${wheelSVG(t,34)}<div style="min-width:0">
-      ${m._exemple?'<div class="example">Exemple à remplacer</div>':""}
+      ${m._exemple?'<div class="example">Exemple à remplacer</div>':""}${isAuto(m)?'<div class="example">Repéré automatiquement · à vérifier</div>':""}
       <h2>${esc(m.Nom||"Usine sans nom")}</h2>
       <div class="sub">${esc(t.label)} · ${esc(m.Cours_d_eau||"cours d'eau ?")} · ${esc(m.Commune||"")}</div></div>
       <button class="close" id="ficheClose" aria-label="Fermer la fiche">✕</button></div>
@@ -442,13 +517,18 @@ function openFiche(m){
       <section><div class="label">Photos</div>${gallery(links(m.Photos),"Aucune photo pour l'instant. Ajoutez des liens d'images dans la colonne « Photos » du tableau Grist.")}</section>
       <section><div class="label">Cartes anciennes</div>${gallery(links(m.Cartes_anciennes),"Aucune carte ancienne. Ajoutez des liens (cadastre napoléonien, Cassini…) dans la colonne « Cartes_anciennes ».")}
         <div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:8px">
-          <button class="btn" id="seeEM">Voir l'état-major ici</button><button class="btn" id="see50">Voir la carte 1950 ici</button></div></section>
+          <button class="btn" id="seeCassini">Cassini ici</button><button class="btn" id="seeEM">État-major ici</button><button class="btn" id="see50">Carte 1950 ici</button></div></section>
+      ${isAuto(m)?`<section class="note">Ce moulin a été repéré automatiquement d'après un nom de lieu IGN. Vérifiez-le sur les cartes anciennes, puis complétez la fiche dans Grist.
+        ${MODE==="widget"?'<div style="margin-top:8px"><button class="btn primary" id="markOk">Marquer comme vérifié</button></div>':""}</section>`:""}
       <section><div class="label">Carte d'identité</div><dl class="id">${rows}</dl></section>
     </div>`;
   f.hidden = false;
   $("#ficheClose").onclick = () => f.hidden = true;
   const zoomTo = k => { document.getElementById("base-"+k).click(); map.setView([num(m.Latitude),num(m.Longitude)], 15); };
-  $("#seeEM").onclick = () => zoomTo("em"); $("#see50").onclick = () => zoomTo("ign50");
+  $("#seeEM").onclick = () => zoomTo("em"); $("#see50").onclick = () => zoomTo("ign50"); $("#seeCassini").onclick = () => zoomTo("cassini");
+  const ok = $("#markOk"); if (ok) ok.onclick = async () => { ok.disabled = true;
+    try { await grist.selectedTable.update({id:m.id, fields:{A_verifier:false}}); ok.textContent = "Vérifié ✓"; }
+    catch(e){ ok.textContent = "Échec : droits d'édition requis"; } };
   if (window.grist && inGrist) { try{ grist.setCursorPos({rowId:m.id}); }catch(e){} }
 }
 
@@ -531,6 +611,8 @@ function startDraft(latlng){
   if (draft) map.removeLayer(draft);
   draft = L.marker(pos, {icon:draftIcon, draggable:true, pane:"wheels", zIndexOffset:1000}).addTo(map);
   draft.on("dragend", () => { const p = draft.getLatLng(); $("#f-lat").value = p.lat.toFixed(6); $("#f-lon").value = p.lng.toFixed(6);
+    const nr = nearestRiver(p); if (nr && nr.dist < 0.15 && nr.name) $("#f-ce").value = cleanRiver(nr.name);
+    $("#f-ce").dispatchEvent(new Event("change"));
     communeAt(p.lat, p.lng).then(c => { if (c) $("#f-commune").value = c; }); });
   openForm(pos, near, snapped);
   communeAt(pos.lat, pos.lng).then(c => { const el = $("#f-commune"); if (el && !el.value) el.value = c; });
@@ -552,18 +634,18 @@ function openForm(pos, near, snapped){
     <div class="body"><form class="add" id="addForm" novalidate>
       <div class="note ${MODE==="demo"?"":"ok"}">${where}</div>
       <label>Nom de l'usine<input id="f-nom" required placeholder="ex. Moulin du Pont"></label>
-      <label>Type d'usine<select id="f-type">${TYPES.map(t=>`<option value="${esc(t.k)}">${esc(t.label)}</option>`).join("")}</select></label>
-      <label>Cours d'eau (où tourne la roue)<input id="f-ce" list="dl-ce" value="${esc(river)}"></label>
+      <label>Type d'usine<select id="f-type">${TYPES.map(t=>`<option value="${esc(t.k)}" ${t.k==="Non déterminé"?"selected":""}>${esc(t.label)}</option>`).join("")}</select></label>
+      <label>Cours d'eau (où tourne la roue)<input id="f-ce" list="dl-ce" value="${esc(cleanRiver(river))}"></label>
       <div class="two">
         <label>Affluent de<input id="f-aff" list="dl-aff" placeholder="ex. Albarine"></label>
-        <label>Rivière principale<input id="f-rp" list="dl-rp" placeholder="Ain, Rhône, Saône…"></label>
+        <label>Rivière principale<select id="f-rp"><option value="">—</option><option>Rhône</option><option>Ain</option><option>Saône</option></select></label>
       </div>
       <label>Commune<input id="f-commune"></label>
       <div class="two">
         <label>Latitude<input id="f-lat" inputmode="decimal" value="${pos.lat.toFixed(6)}"></label>
         <label>Longitude<input id="f-lon" inputmode="decimal" value="${pos.lng.toFixed(6)}"></label>
       </div>
-      <label>État actuel<select id="f-etat"><option>Inconnu</option><option>En activité</option><option>Transformé</option><option>Vestiges</option><option>Disparu</option></select></label>
+      <label>État actuel<select id="f-etat"><option>Inconnu</option><option>En activité</option><option>Aucune activité</option><option>Transformé</option><option>Vestiges</option><option>Disparu</option></select></label>
       <div class="two">
         <label>Hauteur de chute (m)<input id="f-h" inputmode="decimal"></label>
         <label>Débit (m³/s)<input id="f-q" inputmode="decimal"></label>
@@ -577,8 +659,10 @@ function openForm(pos, near, snapped){
   f.hidden = false;
   const cancel = () => { f.hidden = true; setPlacing(false); };
   $("#ficheClose").onclick = cancel; $("#f-cancel").onclick = cancel;
-  $("#f-ce").addEventListener("change", e => { if (!$("#f-aff").value) $("#f-aff").value = e.target.value; });
-  if (river && !$("#f-aff").value) $("#f-aff").value = river;
+  const fillHydro = () => { const p = draft ? draft.getLatLng() : pos; const h = hydroFor(p.lat, p.lng, $("#f-ce").value);
+    $("#f-aff").value = h.affluent; $("#f-rp").value = h.principale; };
+  $("#f-ce").addEventListener("change", fillHydro);
+  fillHydro();
   $("#addForm").addEventListener("submit", saveDraft);
   $("#f-nom").focus();
 }
@@ -592,7 +676,7 @@ async function saveDraft(e){
   try { localStorage.setItem("contributeur", v("#f-who")); } catch(_){}
   const fields = { Nom:v("#f-nom"), Type:v("#f-type"), Cours_d_eau:v("#f-ce"), Affluent:v("#f-aff"), Riviere_principale:v("#f-rp"),
     Commune:v("#f-commune"), Latitude:lat, Longitude:lon, Etat:v("#f-etat"), Hauteur_chute_m:n("#f-h"), Debit_m3s:n("#f-q"),
-    Contributeur:v("#f-who"), Mis_a_jour:new Date().toISOString().slice(0,10) };
+    Contributeur:v("#f-who"), Mis_a_jour:new Date().toISOString().slice(0,10), Origine:"Saisie sur la carte" };
   for (const k in fields) if (fields[k]==="" || fields[k]===null) delete fields[k];
   $("#f-save").disabled = true; $("#f-save").textContent = "Enregistrement…";
   try {
