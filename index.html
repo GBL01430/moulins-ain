@@ -105,6 +105,16 @@ form.add .actions{display:flex;gap:8px;flex-wrap:wrap}
 .btn.primary{background:var(--water);color:#fff;border-color:var(--water);font-weight:600}
 .note{font-size:12.5px;border-left:3px solid var(--warn);padding:6px 10px;color:var(--ink);background:var(--bg)}
 .ok{border-left-color:var(--basin)}
+.actions-bar{display:flex;gap:8px;flex-wrap:wrap;padding:10px 18px;border-bottom:1px solid var(--line)}
+.btn.danger{color:var(--warn);border-color:var(--warn)}
+.btn.danger:hover{background:var(--warn);color:#fff}
+.confirm{display:flex;flex-direction:column;gap:8px;font-weight:600;color:var(--warn)}
+.confirm .actions{display:flex;gap:8px}
+form.add fieldset{border:1px solid var(--line);border-radius:8px;padding:8px 12px 12px;margin:0;display:flex;flex-direction:column;gap:8px;min-width:0}
+form.add legend{font-size:11px;text-transform:uppercase;letter-spacing:.08em;color:var(--muted);font-weight:600;padding:0 4px}
+form.add .two .full{grid-column:1 / -1}
+form.add textarea{resize:vertical;min-height:2.6em}
+form.add label.row{flex-direction:row;align-items:center;color:var(--ink)}
 @media (max-width:720px){
   #side{position:absolute;inset:0 auto 0 0;transform:translateX(-100%);transition:transform .2s}
   body.side-open #side{transform:none}
@@ -513,6 +523,7 @@ function openFiche(m){
       <h2>${esc(m.Nom||"Usine sans nom")}</h2>
       <div class="sub">${esc(t.label)} · ${esc(m.Cours_d_eau||"cours d'eau ?")} · ${esc(m.Commune||"")}</div></div>
       <button class="close" id="ficheClose" aria-label="Fermer la fiche">✕</button></div>
+    ${MODE==="widget"?`<div class="actions-bar" id="ficheActions"><button class="btn primary" id="editBtn">Modifier la fiche</button><button class="btn danger" id="delBtn">Supprimer</button></div>`:""}
     <div class="body">
       <section><div class="label">Photos</div>${gallery(links(m.Photos),"Aucune photo pour l'instant. Ajoutez des liens d'images dans la colonne « Photos » du tableau Grist.")}</section>
       <section><div class="label">Cartes anciennes</div>${gallery(links(m.Cartes_anciennes),"Aucune carte ancienne. Ajoutez des liens (cadastre napoléonien, Cassini…) dans la colonne « Cartes_anciennes ».")}
@@ -530,7 +541,100 @@ function openFiche(m){
     try { await grist.selectedTable.update({id:m.id, fields:{A_verifier:false}}); ok.textContent = "Vérifié ✓"; }
     catch(e){ ok.textContent = "Échec : droits d'édition requis"; } };
   if (window.grist && inGrist) { try{ grist.setCursorPos({rowId:m.id}); }catch(e){} }
+  const eb = $("#editBtn"); if (eb) eb.onclick = () => editFiche(m);
+  const db = $("#delBtn"); if (db) db.onclick = () => askDelete(m);
 }
+
+/* --- suppression avec confirmation dans la fiche --- */
+function askDelete(m){
+  const bar = $("#ficheActions");
+  bar.innerHTML = `<div class="confirm">Supprimer définitivement « ${esc(m.Nom||"cette usine")} » ?
+      <div class="actions"><button class="btn danger" id="delYes">Oui, supprimer</button><button class="btn" id="delNo">Annuler</button></div></div>`;
+  $("#delNo").onclick = () => openFiche(m);
+  $("#delYes").onclick = async () => {
+    $("#delYes").disabled = true; $("#delYes").textContent = "Suppression…";
+    try { await grist.selectedTable.destroy(m.id); $("#fiche").hidden = true; status(`« ${m.Nom||"Usine"} » supprimé. Annulable avec Ctrl+Z dans Grist.`); }
+    catch(e){ bar.innerHTML = `<div class="note">La suppression a échoué : il faut des droits d'édition sur le document.</div>`; }
+  };
+}
+
+/* --- modification de la fiche directement depuis la carte --- */
+const CHOICES = {
+  Type: TYPES.map(t=>t.k),
+  Etat: ["Inconnu","En activité","Aucune activité","Transformé","Vestiges","Disparu"],
+  Riviere_principale: ["Rhône","Ain","Saône"],
+  Droit_d_eau: ["Fondé en titre","Autorisé","Abrogé","Inconnu"],
+};
+const EDIT = [
+  ["Identification", [["Nom","Nom de l'usine"],["Type","Type d'usine"],["Etat","État actuel"],["Commune","Commune"],["Premiere_mention","Première mention"]]],
+  ["Rivières", [["Cours_d_eau","Cours d'eau"],["Affluent","Affluent de"],["Riviere_principale","Rivière principale"]]],
+  ["Position", [["Latitude","Latitude","num"],["Longitude","Longitude","num"]]],
+  ["Hydraulique", [["Hauteur_chute_m","Hauteur de chute (m)","num"],["Debit_m3s","Débit (m³/s)","num"],["Droit_d_eau","Droit d'eau"],["Nb_roues","Nombre de roues","int"],["Type_roue","Roue / turbine"]]],
+  ["Gestion", [["Proprietaire","Propriétaire"],["Protection","Protection"],["Code_ROE","Code ROE"],["Contributeur","Saisi par"]]],
+  ["Documents", [["Photos","Photos (un lien d'image par ligne)","area"],["Cartes_anciennes","Cartes anciennes (un lien par ligne)","area"],["Sources","Sources","area"],["Notes","Notes","area"]]],
+];
+let moveMarker = null;
+function stopMove(){ if (moveMarker) { map.removeLayer(moveMarker); moveMarker = null; } }
+function editFiche(m){
+  const val = k => m[k]===null || m[k]===undefined ? "" : m[k];
+  const input = ([k,lab,kind]) => {
+    const id = "e-"+k;
+    if (CHOICES[k]) { const opts = CHOICES[k].includes(val(k)) || !val(k) ? CHOICES[k] : [val(k), ...CHOICES[k]];
+      return `<label>${lab}<select id="${id}"><option value="">—</option>${opts.map(o=>`<option ${o===val(k)?"selected":""}>${esc(o)}</option>`).join("")}</select></label>`; }
+    if (kind==="area") return `<label class="full">${lab}<textarea id="${id}" rows="2">${esc(val(k))}</textarea></label>`;
+    return `<label>${lab}<input id="${id}" ${kind?'inputmode="decimal"':""} value="${esc(val(k))}"></label>`;
+  };
+  const t = typeOf(m.Type), f = $("#fiche");
+  f.innerHTML = `<div class="head">${wheelSVG(t,34)}<div style="min-width:0"><div class="label" style="margin:0">Modifier la fiche</div>
+      <h2>${esc(m.Nom||"Usine sans nom")}</h2><div class="sub">Les changements sont enregistrés dans Grist.</div></div>
+      <button class="close" id="ficheClose" aria-label="Annuler">✕</button></div>
+    <div class="body"><form class="add" id="editForm" novalidate>
+      ${EDIT.map(([title, fl]) => `<fieldset><legend>${title}</legend><div class="two">${fl.map(input).join("")}</div>
+        ${title==="Position"?`<div class="actions"><button class="btn" type="button" id="e-move">Déplacer la roue sur la carte</button></div>`:""}
+        ${title==="Rivières"?`<div class="actions"><button class="btn" type="button" id="e-hydro">Recalculer d'après la position</button></div>`:""}</fieldset>`).join("")}
+      <label class="row"><input type="checkbox" id="e-A_verifier" ${isAuto(m)?"checked":""}> À vérifier (repéré automatiquement)</label>
+      <div class="actions"><button class="btn primary" type="submit" id="e-save">Enregistrer</button><button class="btn" type="button" id="e-cancel">Annuler</button></div>
+      <div id="e-msg"></div></form></div>`;
+  const cancel = () => { stopMove(); openFiche(m); };
+  $("#ficheClose").onclick = cancel; $("#e-cancel").onclick = cancel;
+  $("#e-move").onclick = () => {
+    stopMove();
+    const pos = [num($("#e-Latitude").value), num($("#e-Longitude").value)];
+    moveMarker = L.marker(pos, {draggable:true, pane:"wheels", zIndexOffset:2000,
+      icon:L.divIcon({className:"", html:wheelSVG({fill:"#ffffff",stroke:"#a4462a"},32), iconSize:[32,32], iconAnchor:[16,16]})}).addTo(map);
+    map.setView(pos, Math.max(map.getZoom(), 15));
+    moveMarker.on("dragend", () => { let p = moveMarker.getLatLng(); const nr = nearestRiver(p);
+      if (nr && nr.dist < 0.05) { p = L.latLng(nr.coords[1], nr.coords[0]); moveMarker.setLatLng(p); }
+      $("#e-Latitude").value = p.lat.toFixed(6); $("#e-Longitude").value = p.lng.toFixed(6); });
+    $("#e-move").textContent = "Faites glisser la roue blanche, puis enregistrez";
+  };
+  $("#e-hydro").onclick = () => {
+    const lat = num($("#e-Latitude").value), lon = num($("#e-Longitude").value);
+    const nr = nearestRiver(L.latLng(lat, lon)); if (nr && nr.dist < 0.15 && nr.name) $("#e-Cours_d_eau").value = cleanRiver(nr.name);
+    const hy = hydroFor(lat, lon, $("#e-Cours_d_eau").value);
+    if (hy.affluent) $("#e-Affluent").value = hy.affluent; if (hy.principale) $("#e-Riviere_principale").value = hy.principale;
+  };
+  $("#editForm").addEventListener("submit", async e => {
+    e.preventDefault();
+    const fields = {};
+    for (const [, fl] of EDIT) for (const [k,,kind] of fl) {
+      let v = $("#e-"+k).value.trim();
+      if (kind==="num" || kind==="int") { if (v==="") v = null; else { v = num(v); if (isNaN(v)) { $("#e-msg").innerHTML = `<div class="note">« ${esc(k)} » doit être un nombre.</div>`; return; } if (kind==="int") v = Math.round(v); } }
+      const old = m[k]===undefined ? (kind?null:"") : m[k];
+      const empty = x => x===null || x===undefined || x==="";
+      if (!(v===old || (empty(v) && empty(old)))) fields[k] = v;
+    }
+    const av = $("#e-A_verifier").checked; if (av !== isAuto(m)) fields.A_verifier = av;
+    if (!Object.keys(fields).length) { stopMove(); openFiche(m); return; }
+    fields.Mis_a_jour = Math.floor(Date.UTC(new Date().getFullYear(), new Date().getMonth(), new Date().getDate())/1000);
+    $("#e-save").disabled = true; $("#e-save").textContent = "Enregistrement…";
+    try { reopenId = m.id; await grist.selectedTable.update({id:m.id, fields}); stopMove();
+      status(`« ${fields.Nom || m.Nom || "Usine"} » mis à jour.`); }
+    catch(err){ reopenId = null; $("#e-msg").innerHTML = `<div class="note">L'enregistrement a échoué : il faut des droits d'édition sur le document.</div>`;
+      $("#e-save").disabled = false; $("#e-save").textContent = "Enregistrer"; }
+  });
+}
+let reopenId = null;
 
 /* --- récapitulatif par rivière principale puis par affluent --- */
 function renderRecap(){
@@ -570,6 +674,7 @@ function copyCSV(){
 function setData(rows, label){
   moulins = rows; $("#datasrc").textContent = label;
   renderLegend(); renderWheels(); renderRecap();
+  if (reopenId !== null) { const m = moulins.find(x => x.id === reopenId); reopenId = null; if (m) openFiche(m); }
   status(`${moulins.length} usine(s) affichée(s).`);
 }
 
