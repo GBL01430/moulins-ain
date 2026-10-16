@@ -725,7 +725,7 @@ if (MODE === "api") {
 }
 if (inGrist){
   grist.ready({requiredAccess:"full"});
-  grist.onRecords(recs => setData(recs, "tableau Grist (temps réel)"));
+  grist.onRecords(recs => setData(recs, "tableau Grist (temps réel)"), {includeColumns:"normal"});
   grist.onRecord(rec => { const m = moulins.find(x=>x.id===rec.id); if(m && $("#fiche").hidden===false) openFiche(m); });
 } else if (docId){
   getJSON(`${server}/api/docs/${docId}/tables/${CONFIG.gristTable}/records`)
